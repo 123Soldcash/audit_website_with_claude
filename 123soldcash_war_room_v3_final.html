@@ -47,19 +47,33 @@ input[type=date]{font-size:11px;padding:3px 5px;border:0.5px solid #ccc;border-r
 .filter-bar{display:flex;gap:6px;flex-wrap:wrap}
 .fb{font-size:11px;padding:4px 10px;border-radius:20px;border:0.5px solid #ccc;background:transparent;color:#666;cursor:pointer}
 .fb.on{background:#1B3A6B;color:#fff;border-color:transparent}
-.btn-group{display:flex;gap:6px}
+.btn-group{display:flex;gap:6px;align-items:center}
 .save-btn{font-size:12px;font-weight:600;padding:7px 16px;border-radius:6px;border:none;background:#1B6B8A;color:#fff;cursor:pointer}
 .save-btn:hover{background:#155a75}
+.save-btn:disabled{background:#aaa;cursor:not-allowed}
 .reset-btn{font-size:12px;padding:7px 12px;border-radius:6px;border:0.5px solid #ccc;background:#fff;color:#666;cursor:pointer}
 .legend{font-size:11px;color:#888;margin-top:10px}
 .legend span{margin-right:12px}
 .branding{text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb}
+
+/* Sync status bar */
+.sync-bar{display:flex;align-items:center;gap:8px;font-size:11px;color:#666;padding:6px 10px;background:#fff;border:0.5px solid #e0e0e0;border-radius:8px;margin-bottom:10px}
+.sync-dot{width:8px;height:8px;border-radius:50%;background:#ccc;flex-shrink:0}
+.sync-dot.ok{background:#1D9E75}
+.sync-dot.err{background:#E24B4A}
+.sync-dot.loading{background:#EF9F27;animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 </style>
 </head>
 <body>
 <div class="container">
   <h1>123SoldCash.com — SEO War Room</h1>
   <p class="subtitle">Team workflow tracker &nbsp;·&nbsp; April 2026 &nbsp;·&nbsp; 44 pages · 27 blogs &nbsp;·&nbsp; <strong style="color:#BA7517">⚠️ Rows highlighted in yellow = no update in 7+ days</strong></p>
+
+  <div class="sync-bar">
+    <div class="sync-dot" id="sync-dot"></div>
+    <span id="sync-msg">Connecting to Google Sheets…</span>
+  </div>
 
   <div class="summary">
     <div class="sc"><div class="num" style="color:#E24B4A" id="cnt-pending">0</div><div class="lbl">Pending</div></div>
@@ -87,7 +101,7 @@ input[type=date]{font-size:11px;padding:3px 5px;border:0.5px solid #ccc;border-r
     </div>
     <div class="btn-group">
       <button class="reset-btn" onclick="resetAll()">Reset all</button>
-      <button class="save-btn" id="savebtn" onclick="saveAll()">Save ↓</button>
+      <button class="save-btn" id="savebtn" onclick="saveAll()">Save ↑ Sheet</button>
     </div>
   </div>
 
@@ -107,6 +121,8 @@ input[type=date]{font-size:11px;padding:3px 5px;border:0.5px solid #ccc;border-r
 </div>
 
 <script>
+const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz0uIdWm7nBnnYXSJ_lFguK_L8HzI_1-j7W18B-yIrm8GqVxO5K1GrfNSzIlCSiHsY/exec';
+
 const TEAM = ['—','Edsel','Luiza','Manager','Rodolfo','Zach'];
 const WF   = ['pending','working','reviewed','approval','indexed'];
 const WFL  = {pending:'Pending',working:'Working',reviewed:'Reviewed',approval:'Approval',indexed:'Indexed'};
@@ -184,6 +200,13 @@ let state = {};
 let activeTab = 'niches';
 let activeFilter = 'all';
 
+function syncStatus(status, msg) {
+  const dot = document.getElementById('sync-dot');
+  const label = document.getElementById('sync-msg');
+  dot.className = 'sync-dot ' + status;
+  label.textContent = msg;
+}
+
 function getState(id){
   if(!state[id]) state[id]={team:'—',wf:'pending',start:'',updated:''};
   return state[id];
@@ -206,11 +229,47 @@ function daysBadge(dateStr){
   return `<span class="days-badge ${cls}">${d}d ago</span>`;
 }
 
-function saveAll(){
-  localStorage.setItem('warroom_v3', JSON.stringify(state));
+async function saveAll(){
   const btn = document.getElementById('savebtn');
-  btn.textContent = 'Saved ✓';
-  setTimeout(()=> btn.textContent = 'Save ↓', 1500);
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  syncStatus('loading', 'Saving to Google Sheets…');
+
+  // Collect all items that have non-default state
+  const allItems = [...niches, ...blogs, ...cities, ...orphans];
+  const toSave = allItems.filter(item => {
+    const s = state[item.id];
+    return s && (s.team !== '—' || s.wf !== 'pending' || s.start !== '' || s.updated !== '');
+  });
+
+  // Also save items that exist in state
+  const stateIds = Object.keys(state);
+  const extra = allItems.filter(item => stateIds.includes(item.id) && !toSave.find(i => i.id === item.id));
+  const finalList = [...toSave, ...extra];
+
+  try {
+    await Promise.all(finalList.map(item => {
+      const s = getState(item.id);
+      return fetch(SCRIPT_URL, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({id: item.id, team: s.team, wf: s.wf, start: s.start, updated: s.updated})
+      });
+    }));
+
+    // Also save to localStorage as backup
+    localStorage.setItem('warroom_v3', JSON.stringify(state));
+
+    syncStatus('ok', 'Saved to Google Sheets ✓ — ' + new Date().toLocaleTimeString());
+    btn.textContent = 'Saved ✓';
+    setTimeout(() => { btn.textContent = 'Save ↑ Sheet'; btn.disabled = false; }, 2000);
+  } catch(err) {
+    syncStatus('err', 'Save failed — using local backup');
+    localStorage.setItem('warroom_v3', JSON.stringify(state));
+    btn.textContent = 'Save ↑ Sheet';
+    btn.disabled = false;
+  }
 }
 
 function resetAll(){
@@ -220,9 +279,47 @@ function resetAll(){
   render();
 }
 
-function loadState(){
-  const s = localStorage.getItem('warroom_v3');
-  if(s) state = JSON.parse(s);
+async function loadState(){
+  syncStatus('loading', 'Loading data from Google Sheets…');
+
+  // First load from localStorage as instant fallback
+  const local = localStorage.getItem('warroom_v3');
+  if(local) {
+    state = JSON.parse(local);
+    render();
+    syncStatus('loading', 'Local data loaded — syncing with Sheet…');
+  }
+
+  // Then fetch from Google Sheets
+  try {
+    const res = await fetch(SCRIPT_URL + '?t=' + Date.now());
+    const rows = await res.json();
+    if(Array.isArray(rows) && rows.length > 0){
+      rows.forEach(row => {
+        if(row.id) {
+          state[row.id] = {
+            team: row.team || '—',
+            wf:   row.wf   || 'pending',
+            start:   row.start   || '',
+            updated: row.updated || ''
+          };
+        }
+      });
+      // Save fetched data to localStorage
+      localStorage.setItem('warroom_v3', JSON.stringify(state));
+      render();
+      syncStatus('ok', 'Synced with Google Sheets — ' + new Date().toLocaleTimeString());
+    } else {
+      syncStatus('ok', 'Sheet is empty — start editing and click Save');
+    }
+  } catch(err) {
+    if(local) {
+      syncStatus('err', 'Sheet offline — showing local data. Save will retry.');
+    } else {
+      syncStatus('err', 'Could not connect to Sheet — data will save locally');
+      render();
+    }
+  }
 }
 
 function updateCounts(){
@@ -238,14 +335,21 @@ function updateCounts(){
 }
 
 function onWfChange(id, sel){
+  state[id] = state[id] || {team:'—',wf:'pending',start:'',updated:''};
   state[id].wf = sel.value;
   sel.className = 's-'+sel.value;
   state[id].updated = today();
   updateCounts();
 }
 
-function onTeamChange(id, sel){ state[id].team = sel.value; }
-function onStartChange(id, inp){ state[id].start = inp.value; }
+function onTeamChange(id, sel){
+  state[id] = state[id] || {team:'—',wf:'pending',start:'',updated:''};
+  state[id].team = sel.value;
+}
+function onStartChange(id, inp){
+  state[id] = state[id] || {team:'—',wf:'pending',start:'',updated:''};
+  state[id].start = inp.value;
+}
 
 function makeRow(item, extraCols){
   const s = getState(item.id);
@@ -329,7 +433,6 @@ function render(){
 }
 
 loadState();
-render();
 </script>
 </body>
 </html>
